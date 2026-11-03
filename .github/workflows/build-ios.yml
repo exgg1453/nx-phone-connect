@@ -1,0 +1,46 @@
+name: Build iOS
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build unsigned Release app
+        run: |
+          set -o pipefail
+          xcodebuild -project NXPhoneConnect.xcodeproj -scheme NXPhoneConnect -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" 2>&1 | tee build.log
+
+      - name: Package IPA
+        run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/NXPhoneConnect.app Payload/
+          zip -qr NXPhoneConnect.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: NXPhoneConnect-unsigned-ipa
+          path: NXPhoneConnect.ipa
+
+      - name: Write error output
+        if: failure()
+        run: |
+          grep -E "error:|BUILD FAILED" build.log > error.txt || tail -n 100 build.log > error.txt
+
+      - name: Upload error output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-error
+          path: error.txt
