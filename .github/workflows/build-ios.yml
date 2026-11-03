@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-latest
@@ -32,6 +35,11 @@ jobs:
         with:
           path: NXPhoneConnect-unsigned-ipa.ipa
           archive: false
+
+      - name: Publish release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload latest NXPhoneConnect-unsigned-ipa.ipa --clobber
 
       - name: Write error output
         if: failure()

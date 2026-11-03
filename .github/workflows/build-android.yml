@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -30,6 +33,13 @@ jobs:
         with:
           name: NXPhoneConnect-android-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk NXPhoneConnect.apk
+          gh release upload latest NXPhoneConnect.apk --clobber
 
       - name: Write error output
         if: failure()
