@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_description">Lets a paired controller tap, swipe and press navigation keys on this device. Used only while you are sharing this device.</string>
+</resources>

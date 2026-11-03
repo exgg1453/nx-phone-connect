@@ -1,46 +1,67 @@
+import ReplayKit
 import SwiftUI
 
+struct BroadcastPicker: UIViewRepresentable {
+    func makeUIView(context: Context) -> RPSystemBroadcastPickerView {
+        let picker = RPSystemBroadcastPickerView(frame: CGRect(x: 0, y: 0, width: 72, height: 72))
+        picker.preferredExtension = "com.nxteam.nxconnect.broadcast"
+        picker.showsMicrophoneButton = false
+        return picker
+    }
+
+    func updateUIView(_ uiView: RPSystemBroadcastPickerView, context: Context) {}
+}
+
 struct HostView: View {
-    @StateObject private var session = HostSession()
+    @State private var pairingCode = ""
+    @State private var statusText = "Not sharing"
+    @State private var touchPosition: (horizontal: Double, vertical: Double)?
+
+    private let refreshTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(spacing: 24) {
-            Text(session.statusText)
+            Text(statusText)
                 .font(.headline)
 
-            if session.isSharing {
+            if pairingCode.isEmpty {
+                Text("Tap the button below, choose NX Phone Connect Broadcast and start the broadcast to get a pairing code.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+            } else {
                 VStack(spacing: 8) {
                     Text("Pairing code")
                         .foregroundColor(.secondary)
-                    Text(session.pairingCode)
+                    Text(pairingCode)
                         .font(.system(size: 44, weight: .bold, design: .monospaced))
                 }
-                if let position = session.lastTouchPosition {
-                    Text(String(format: "Remote touch at %.2f, %.2f", position.x, position.y))
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
-                }
             }
 
-            Button(session.isSharing ? "Stop sharing" : "Start sharing") {
-                if session.isSharing {
-                    session.stop()
-                } else {
-                    session.start()
-                }
+            if let position = touchPosition {
+                Text(String(format: "Remote touch at %.2f, %.2f", position.horizontal, position.vertical))
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
             }
-            .buttonStyle(.borderedProminent)
 
-            Text("Only this app's own screen is shared. iOS does not allow one device to control another iPhone.")
+            BroadcastPicker()
+                .frame(width: 72, height: 72)
+
+            Text("Warning: a controller on Android can view your iPhone screen but cannot control it. iOS does not allow remote input.")
                 .font(.footnote)
-                .foregroundColor(.secondary)
+                .foregroundColor(.orange)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
         }
         .padding()
         .navigationTitle("Share this device")
-        .onDisappear {
-            session.stop()
-        }
+        .onAppear(perform: refresh)
+        .onReceive(refreshTimer) { _ in refresh() }
+    }
+
+    private func refresh() {
+        pairingCode = SharedState.pairingCode
+        statusText = SharedState.statusText
+        touchPosition = SharedState.touchPosition
     }
 }

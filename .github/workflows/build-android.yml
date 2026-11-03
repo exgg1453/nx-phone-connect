@@ -1,0 +1,44 @@
+name: Build Android
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon 2>&1 | tee ../build.log
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NXPhoneConnect-android-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Write error output
+        if: failure()
+        run: |
+          grep -E "^e: |error:|What went wrong|FAILED" -A3 build.log > error.txt || tail -n 100 build.log > error.txt
+
+      - name: Upload error output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-error
+          path: error.txt

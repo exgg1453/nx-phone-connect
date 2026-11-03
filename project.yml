@@ -9,6 +9,14 @@ targets:
     platform: iOS
     sources:
       - Sources
+      - Shared
+    dependencies:
+      - target: NXPhoneConnectBroadcast
+    entitlements:
+      path: Entitlements/NXPhoneConnect.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.nxteam.nxconnect
     info:
       path: Sources/Info.plist
       properties:
@@ -29,6 +37,37 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
+  NXPhoneConnectBroadcast:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Extension
+      - Shared
+    entitlements:
+      path: Entitlements/NXPhoneConnectBroadcast.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.nxteam.nxconnect
+    info:
+      path: Extension/Info.plist
+      properties:
+        CFBundleDisplayName: NX Phone Connect Broadcast
+        NSLocalNetworkUsageDescription: NX Phone Connect uses the local network to share this screen with your other devices.
+        NSBonjourServices:
+          - _nxconnect._tcp
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.broadcast-services-upload
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).SampleHandler
+          RPBroadcastProcessMode: RPBroadcastProcessModeSampleBuffer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nxteam.nxconnect.broadcast
+        PRODUCT_NAME: NXPhoneConnectBroadcast
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        APPLICATION_EXTENSION_API_ONLY: YES
 schemes:
   NXPhoneConnect:
     build:

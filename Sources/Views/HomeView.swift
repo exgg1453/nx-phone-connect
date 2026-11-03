@@ -4,7 +4,7 @@ struct HomeView: View {
     var body: some View {
         NavigationView {
             List {
-                Section(footer: Text("Pick this device's role. Both devices must be on the same network.")) {
+                Section(footer: Text("Pick this device's role. Both devices must be on the same network.\n\nWarning: an iPhone can control an Android device, but an Android device cannot control an iPhone. It can only view the shared iPhone screen.")) {
                     NavigationLink(destination: ControllerView()) {
                         Label("Control another device", systemImage: "hand.tap")
                     }
