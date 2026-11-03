@@ -43,6 +43,12 @@ class HostService : Service() {
     private var paddedBitmap: Bitmap? = null
     private val frameExecutor = Executors.newSingleThreadExecutor()
     private val isSendingFrame = AtomicBoolean(false)
+    private val isAwaitingAcknowledgement = AtomicBoolean(false)
+    private var captureHandler: Handler? = null
+    private var hasPendingFrame = false
+    private var isFlushScheduled = false
+    private var frameWidth = 0
+    private var frameHeight = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -66,6 +72,7 @@ class HostService : Service() {
         thread.start()
         captureThread = thread
         val handler = Handler(thread.looper)
+        captureHandler = handler
 
         val manager = getSystemService(MediaProjectionManager::class.java)
         val newProjection = manager.getMediaProjection(resultCode, permissionData)
@@ -163,11 +170,17 @@ class HostService : Service() {
         }
         client.setReadTimeout(0)
         authenticatedClient?.close()
+        isAwaitingAcknowledgement.set(false)
         authenticatedClient = client
         client.send(MessageKind.ACCEPTED)
 
         while (true) {
             val message = client.readMessage() ?: break
+            if (message.first == MessageKind.FRAME_ACKNOWLEDGED) {
+                isAwaitingAcknowledgement.set(false)
+                captureHandler?.post { flushPendingFrame() }
+                continue
+            }
             val service = RemoteControlAccessibilityService.instance ?: continue
             try {
                 val json = JSONObject(message.second.toString(Charsets.UTF_8))
@@ -220,13 +233,9 @@ class HostService : Service() {
     }
 
     private fun sendFrame(image: Image) {
-        val client = authenticatedClient ?: return
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastFrameTime < MINIMUM_FRAME_INTERVAL || isSendingFrame.get()) {
+        if (authenticatedClient == null) {
             return
         }
-        lastFrameTime = now
-
         val plane = image.planes[0]
         val paddedWidth = plane.rowStride / plane.pixelStride
         val bitmap = paddedBitmap?.takeIf { it.width == paddedWidth && it.height == image.height }
@@ -235,10 +244,41 @@ class HostService : Service() {
                 paddedBitmap = it
             }
         bitmap.copyPixelsFromBuffer(plane.buffer)
-        val frameBitmap = if (paddedWidth == image.width) {
+        frameWidth = image.width
+        frameHeight = image.height
+        hasPendingFrame = true
+        flushPendingFrame()
+    }
+
+    private fun flushPendingFrame() {
+        val client = authenticatedClient ?: return
+        val bitmap = paddedBitmap ?: return
+        if (!hasPendingFrame || isSendingFrame.get()) {
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        val elapsed = now - lastFrameTime
+        var wait = MINIMUM_FRAME_INTERVAL - elapsed
+        if (isAwaitingAcknowledgement.get()) {
+            wait = maxOf(wait, ACKNOWLEDGEMENT_TIMEOUT - elapsed)
+        }
+        if (wait > 0) {
+            if (!isFlushScheduled) {
+                isFlushScheduled = true
+                captureHandler?.postDelayed({
+                    isFlushScheduled = false
+                    flushPendingFrame()
+                }, wait)
+            }
+            return
+        }
+        hasPendingFrame = false
+        lastFrameTime = now
+
+        val frameBitmap = if (bitmap.width == frameWidth) {
             bitmap
         } else {
-            Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+            Bitmap.createBitmap(bitmap, 0, 0, frameWidth, frameHeight)
         }
         val stream = ByteArrayOutputStream()
         frameBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, stream)
@@ -247,9 +287,11 @@ class HostService : Service() {
         }
         val frameData = stream.toByteArray()
         isSendingFrame.set(true)
+        isAwaitingAcknowledgement.set(true)
         frameExecutor.execute {
             client.send(MessageKind.FRAME, frameData)
             isSendingFrame.set(false)
+            captureHandler?.post { flushPendingFrame() }
         }
     }
 
@@ -265,8 +307,9 @@ class HostService : Service() {
         private const val CHANNEL_IDENTIFIER = "screen_sharing"
         private const val NOTIFICATION_IDENTIFIER = 1
         private const val MAXIMUM_FRAME_WIDTH = 720f
-        private const val MINIMUM_FRAME_INTERVAL = 200L
-        private const val JPEG_QUALITY = 45
+        private const val MINIMUM_FRAME_INTERVAL = 50L
+        private const val ACKNOWLEDGEMENT_TIMEOUT = 1000L
+        private const val JPEG_QUALITY = 40
         private const val HANDSHAKE_TIMEOUT = 10_000
     }
 }

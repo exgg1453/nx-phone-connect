@@ -24,7 +24,8 @@ final class ControllerSession: ObservableObject {
     private var browser: NWBrowser?
     private var activeConnection: FramedConnection?
     private var lastMoveDate = Date.distantPast
-    private let minimumMoveInterval: TimeInterval = 0.05
+    private let minimumMoveInterval: TimeInterval = 0.03
+    private let decodeQueue = DispatchQueue(label: "com.nxteam.nxconnect.decode", qos: .userInteractive)
 
     func startBrowsing() {
         guard browser == nil else {
@@ -118,13 +119,16 @@ final class ControllerSession: ObservableObject {
         case .rejected:
             state = .failed("Wrong pairing code")
         case .frame:
-            DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-                guard let image = UIImage(data: payload)?.preparingForDisplay() ?? UIImage(data: payload) else {
+            let connection = activeConnection
+            decodeQueue.async { [weak self] in
+                let image = UIImage(data: payload)?.preparingForDisplay()
+                connection?.send(.frameAcknowledged)
+                guard let decodedImage = image else {
                     return
                 }
                 DispatchQueue.main.async {
-                    if self?.state == .connected {
-                        self?.currentFrame = image
+                    if self?.state == .connected, self?.activeConnection === connection {
+                        self?.currentFrame = decodedImage
                     }
                 }
             }

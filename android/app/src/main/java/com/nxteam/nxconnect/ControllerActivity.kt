@@ -213,11 +213,9 @@ class ControllerActivity : Activity() {
                 MessageKind.ACCEPTED -> runOnUiThread { showRemote(true) }
                 MessageKind.REJECTED -> runOnUiThread { statusView.text = "Wrong pairing code" }
                 MessageKind.FRAME -> {
-                    if (isDisplayingFrame) {
-                        continue
-                    }
                     val bitmap = BitmapFactory.decodeByteArray(message.second, 0, message.second.size)
-                    if (bitmap != null) {
+                    send(MessageKind.FRAME_ACKNOWLEDGED, ByteArray(0))
+                    if (bitmap != null && !isDisplayingFrame) {
                         isDisplayingFrame = true
                         runOnUiThread {
                             frameView.setImageBitmap(bitmap)
@@ -315,6 +313,6 @@ class ControllerActivity : Activity() {
 
     companion object {
         private const val CONNECT_TIMEOUT = 8000
-        private const val MINIMUM_MOVE_INTERVAL = 50L
+        private const val MINIMUM_MOVE_INTERVAL = 30L
     }
 }

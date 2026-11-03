@@ -11,7 +11,8 @@ enum class MessageKind(val value: Int) {
     REJECTED(3),
     FRAME(4),
     TOUCH(5),
-    KEY(6);
+    KEY(6),
+    FRAME_ACKNOWLEDGED(7);
 
     companion object {
         fun fromValue(value: Int): MessageKind? = values().firstOrNull { it.value == value }

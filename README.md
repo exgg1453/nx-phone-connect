@@ -14,6 +14,7 @@ TCP over Bonjour service `_nxconnect._tcp`. Each message is one kind byte, a 4-b
 | 4 | frame | host to controller | JPEG image |
 | 5 | touch | controller to host | JSON `{phase: began\|moved\|ended, normalizedHorizontalPosition, normalizedVerticalPosition}` |
 | 6 | key | controller to host | JSON `{name: back\|home\|recents}` |
+| 7 | frameAcknowledged | controller to host | empty, sent after each frame is decoded so the host keeps at most one frame in flight |
 
 ## Android
 

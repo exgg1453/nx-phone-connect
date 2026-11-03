@@ -7,6 +7,7 @@ enum MessageKind: UInt8 {
     case frame = 4
     case touch = 5
     case key = 6
+    case frameAcknowledged = 7
 }
 
 enum TouchPhase: String, Codable {

@@ -8,12 +8,18 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private var activeConnection: FramedConnection?
     private var authenticatedConnection: FramedConnection?
     private var pairingCode = ""
-    private let controllerLock = NSLock()
-    private var hasController = false
-    private let imageContext = CIContext(options: [.cacheIntermediates: false, .useSoftwareRenderer: false])
+
+    private let frameQueue = DispatchQueue(label: "com.nxteam.nxconnect.frames", qos: .userInteractive)
+    private let imageContext = CIContext(options: [.cacheIntermediates: false])
     private let maximumFrameWidth: CGFloat = 720
-    private let minimumFrameInterval: TimeInterval = 0.2
+    private let minimumFrameInterval: TimeInterval = 0.05
+    private let acknowledgementTimeout: TimeInterval = 1
+    private var frameConnection: FramedConnection?
+    private var pendingPixelBuffer: CVPixelBuffer?
     private var lastFrameDate = Date.distantPast
+    private var isSendingFrame = false
+    private var isAwaitingAcknowledgement = false
+    private var isFlushScheduled = false
 
     override func broadcastStarted(withSetupInfo setupInfo: [String: NSObject]?) {
         pairingCode = String(format: "%06d", Int.random(in: 0...999_999))
@@ -41,44 +47,74 @@ final class SampleHandler: RPBroadcastSampleHandler {
     }
 
     override func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, with sampleBufferType: RPSampleBufferType) {
-        guard sampleBufferType == .video, controllerIsConnected() else {
+        guard sampleBufferType == .video, let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             return
         }
-        let now = Date()
-        guard now.timeIntervalSince(lastFrameDate) >= minimumFrameInterval,
-              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+        frameQueue.async { [weak self] in
+            guard let self = self, self.frameConnection != nil else {
+                return
+            }
+            self.pendingPixelBuffer = pixelBuffer
+            self.flushPendingFrame()
+        }
+    }
+
+    private func flushPendingFrame() {
+        guard let connection = frameConnection, let pixelBuffer = pendingPixelBuffer, !isSendingFrame else {
             return
         }
-        lastFrameDate = now
+        let elapsed = Date().timeIntervalSince(lastFrameDate)
+        var wait = minimumFrameInterval - elapsed
+        if isAwaitingAcknowledgement {
+            wait = max(wait, acknowledgementTimeout - elapsed)
+        }
+        if wait > 0 {
+            if !isFlushScheduled {
+                isFlushScheduled = true
+                frameQueue.asyncAfter(deadline: .now() + wait) { [weak self] in
+                    self?.isFlushScheduled = false
+                    self?.flushPendingFrame()
+                }
+            }
+            return
+        }
+        pendingPixelBuffer = nil
+        lastFrameDate = Date()
+        guard let frameData = encode(pixelBuffer) else {
+            return
+        }
+        isSendingFrame = true
+        isAwaitingAcknowledgement = true
+        connection.send(.frame, payload: frameData) { [weak self] in
+            self?.frameQueue.async {
+                self?.isSendingFrame = false
+                self?.flushPendingFrame()
+            }
+        }
+    }
+
+    private func encode(_ pixelBuffer: CVPixelBuffer) -> Data? {
         let image = CIImage(cvPixelBuffer: pixelBuffer)
         let scale = min(1, maximumFrameWidth / image.extent.width)
         let scaledImage = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let options = [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.45]
-        guard let frameData = imageContext.jpegRepresentation(of: scaledImage, colorSpace: colorSpace, options: options) else {
-            return
-        }
-        DispatchQueue.main.async { [weak self] in
-            self?.authenticatedConnection?.sendDroppingIfBusy(.frame, payload: frameData)
-        }
+        let options = [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.4]
+        return imageContext.jpegRepresentation(of: scaledImage, colorSpace: colorSpace, options: options)
     }
 
-    private func controllerIsConnected() -> Bool {
-        controllerLock.lock()
-        defer { controllerLock.unlock() }
-        return hasController
-    }
-
-    private func updateControllerConnected(_ value: Bool) {
-        controllerLock.lock()
-        hasController = value
-        controllerLock.unlock()
+    private func updateFrameConnection(_ connection: FramedConnection?) {
+        frameQueue.async { [weak self] in
+            self?.frameConnection = connection
+            self?.pendingPixelBuffer = nil
+            self?.isSendingFrame = false
+            self?.isAwaitingAcknowledgement = false
+        }
     }
 
     private func accept(_ connection: NWConnection) {
         activeConnection?.cancel()
         authenticatedConnection = nil
-        updateControllerConnected(false)
+        updateFrameConnection(nil)
         let framed = FramedConnection(connection: connection)
         framed.onMessage = { [weak self, weak framed] kind, payload in
             guard let self = self, let framed = framed else {
@@ -94,7 +130,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
             case .failed, .cancelled:
                 self.authenticatedConnection = nil
                 self.activeConnection = nil
-                self.updateControllerConnected(false)
+                self.updateFrameConnection(nil)
                 SharedState.statusText = "Waiting for a controller"
                 SharedState.touchPosition = nil
             default:
@@ -110,12 +146,17 @@ final class SampleHandler: RPBroadcastSampleHandler {
         case .hello:
             if String(data: payload, encoding: .utf8) == pairingCode {
                 authenticatedConnection = connection
-                updateControllerConnected(true)
                 connection.send(.accepted)
+                updateFrameConnection(connection)
                 SharedState.statusText = "Controller connected"
             } else {
                 connection.send(.rejected)
                 connection.cancel()
+            }
+        case .frameAcknowledged:
+            frameQueue.async { [weak self] in
+                self?.isAwaitingAcknowledgement = false
+                self?.flushPendingFrame()
             }
         case .touch:
             guard authenticatedConnection === connection,
