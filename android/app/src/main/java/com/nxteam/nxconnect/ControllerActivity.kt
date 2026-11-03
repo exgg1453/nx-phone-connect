@@ -6,13 +6,18 @@ import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.os.Build
 import android.os.Bundle
 import android.text.InputType
 import android.view.MotionEvent
+import android.view.Gravity
 import android.view.View
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
@@ -33,10 +38,13 @@ class ControllerActivity : Activity() {
     private lateinit var statusView: TextView
     private lateinit var codeField: EditText
     private lateinit var frameView: ImageView
+    private lateinit var controlBar: LinearLayout
+    private lateinit var fullScreenButton: Button
     private var discoveryListener: NsdManager.DiscoveryListener? = null
     private var selectedName: String? = null
     private var connection: FramedSocket? = null
     private var lastMoveTime = 0L
+    private var isFullScreen = false
     @Volatile
     private var isDisplayingFrame = false
 
@@ -78,20 +86,36 @@ class ControllerActivity : Activity() {
             scaleType = ImageView.ScaleType.FIT_CENTER
             setOnTouchListener { view, event -> handleTouch(view as ImageView, event) }
         }
+        fullScreenButton = Button(this).apply {
+            text = "Full screen"
+            alpha = 0.7f
+            setOnClickListener { setFullScreen(!isFullScreen) }
+        }
+        val screenContainer = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            addView(frameView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(fullScreenButton, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.END
+            ))
+        }
+        controlBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(keyButton("Back", "back"))
+            addView(keyButton("Home", "home"))
+            addView(keyButton("Recents", "recents"))
+            addView(Button(this@ControllerActivity).apply {
+                text = "Disconnect"
+                setOnClickListener { disconnect() }
+            })
+        }
         remoteLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
-            addView(frameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-            addView(LinearLayout(this@ControllerActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                addView(keyButton("Back", "back"))
-                addView(keyButton("Home", "home"))
-                addView(keyButton("Recents", "recents"))
-                addView(Button(this@ControllerActivity).apply {
-                    text = "Disconnect"
-                    setOnClickListener { disconnect() }
-                })
-            })
+            setBackgroundColor(Color.BLACK)
+            addView(screenContainer, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(controlBar)
         }
 
         setContentView(LinearLayout(this).apply {
@@ -213,7 +237,39 @@ class ControllerActivity : Activity() {
         }
     }
 
+    private fun setFullScreen(enabled: Boolean) {
+        isFullScreen = enabled
+        controlBar.visibility = if (enabled) View.GONE else View.VISIBLE
+        fullScreenButton.text = if (enabled) "Exit full screen" else "Full screen"
+        if (enabled) actionBar?.hide() else actionBar?.show()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(!enabled)
+            val controller = window.insetsController ?: return
+            if (enabled) {
+                controller.hide(WindowInsets.Type.systemBars())
+                controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            } else {
+                controller.show(WindowInsets.Type.systemBars())
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = if (enabled) {
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+            } else {
+                0
+            }
+        }
+    }
+
     private fun showRemote(visible: Boolean) {
+        if (!visible && isFullScreen) {
+            setFullScreen(false)
+        }
         remoteLayout.visibility = if (visible) View.VISIBLE else View.GONE
         formLayout.visibility = if (visible) View.GONE else View.VISIBLE
     }

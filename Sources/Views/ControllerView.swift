@@ -5,6 +5,7 @@ struct ControllerView: View {
     @State private var selectedHost: DiscoveredHost?
     @State private var pairingCode = ""
     @State private var isTouching = false
+    @State private var isFullScreen = false
 
     var body: some View {
         Group {
@@ -72,24 +73,55 @@ struct ControllerView: View {
     }
 
     private var remoteScreen: some View {
-        VStack {
-            if let frame = session.currentFrame {
-                Image(uiImage: frame)
-                    .resizable()
-                    .scaledToFit()
-                    .overlay(touchSurface)
-            } else {
-                ProgressView("Waiting for the first frame...")
+        ZStack(alignment: .topTrailing) {
+            Color.black
+                .ignoresSafeArea()
+            VStack(spacing: 0) {
+                Group {
+                    if let frame = session.currentFrame {
+                        Image(uiImage: frame)
+                            .resizable()
+                            .scaledToFit()
+                            .overlay(touchSurface)
+                    } else {
+                        ProgressView("Waiting for the first frame...")
+                            .foregroundColor(.white)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if !isFullScreen {
+                    controlBar
+                }
             }
-            Spacer(minLength: 0)
-            HStack(spacing: 24) {
-                Button("Back") { session.sendKey(named: "back") }
-                Button("Home") { session.sendKey(named: "home") }
-                Button("Recents") { session.sendKey(named: "recents") }
-                Button("Disconnect", role: .destructive) { session.disconnect() }
+            Button {
+                withAnimation {
+                    isFullScreen.toggle()
+                }
+            } label: {
+                Image(systemName: isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(10)
+                    .background(Circle().fill(Color.black.opacity(0.5)))
             }
-            .padding()
+            .padding(12)
         }
+        .navigationBarHidden(isFullScreen)
+        .statusBar(hidden: isFullScreen)
+        .ignoresSafeArea(.container, edges: isFullScreen ? .all : [])
+    }
+
+    private var controlBar: some View {
+        HStack(spacing: 24) {
+            Button("Back") { session.sendKey(named: "back") }
+            Button("Home") { session.sendKey(named: "home") }
+            Button("Recents") { session.sendKey(named: "recents") }
+            Button("Disconnect", role: .destructive) {
+                isFullScreen = false
+                session.disconnect()
+            }
+        }
+        .padding()
     }
 
     private var touchSurface: some View {
