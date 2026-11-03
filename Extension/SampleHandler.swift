@@ -10,7 +10,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private var pairingCode = ""
     private let controllerLock = NSLock()
     private var hasController = false
-    private let imageContext = CIContext()
+    private let imageContext = CIContext(options: [.cacheIntermediates: false, .useSoftwareRenderer: false])
     private let maximumFrameWidth: CGFloat = 720
     private let minimumFrameInterval: TimeInterval = 0.2
     private var lastFrameDate = Date.distantPast
@@ -20,7 +20,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
         SharedState.pairingCode = pairingCode
         SharedState.statusText = "Waiting for a controller"
         do {
-            let newListener = try NWListener(using: .tcp)
+            let newListener = try NWListener(using: FramedConnection.parameters())
             newListener.service = NWListener.Service(name: UIDevice.current.name, type: "_nxconnect._tcp")
             newListener.newConnectionHandler = { [weak self] connection in
                 DispatchQueue.main.async {
@@ -59,7 +59,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
             return
         }
         DispatchQueue.main.async { [weak self] in
-            self?.authenticatedConnection?.send(.frame, payload: frameData)
+            self?.authenticatedConnection?.sendDroppingIfBusy(.frame, payload: frameData)
         }
     }
 

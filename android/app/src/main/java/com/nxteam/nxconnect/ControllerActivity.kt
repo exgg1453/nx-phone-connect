@@ -36,6 +36,9 @@ class ControllerActivity : Activity() {
     private var discoveryListener: NsdManager.DiscoveryListener? = null
     private var selectedName: String? = null
     private var connection: FramedSocket? = null
+    private var lastMoveTime = 0L
+    @Volatile
+    private var isDisplayingFrame = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -186,9 +189,16 @@ class ControllerActivity : Activity() {
                 MessageKind.ACCEPTED -> runOnUiThread { showRemote(true) }
                 MessageKind.REJECTED -> runOnUiThread { statusView.text = "Wrong pairing code" }
                 MessageKind.FRAME -> {
+                    if (isDisplayingFrame) {
+                        continue
+                    }
                     val bitmap = BitmapFactory.decodeByteArray(message.second, 0, message.second.size)
                     if (bitmap != null) {
-                        runOnUiThread { frameView.setImageBitmap(bitmap) }
+                        isDisplayingFrame = true
+                        runOnUiThread {
+                            frameView.setImageBitmap(bitmap)
+                            isDisplayingFrame = false
+                        }
                     }
                 }
                 else -> {}
@@ -228,7 +238,14 @@ class ControllerActivity : Activity() {
         val vertical = (event.y - values[android.graphics.Matrix.MTRANS_Y]) / (drawable.intrinsicHeight * scale)
         val phase = when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> "began"
-            MotionEvent.ACTION_MOVE -> "moved"
+            MotionEvent.ACTION_MOVE -> {
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - lastMoveTime < MINIMUM_MOVE_INTERVAL) {
+                    return true
+                }
+                lastMoveTime = now
+                "moved"
+            }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> "ended"
             else -> return true
         }
@@ -242,5 +259,6 @@ class ControllerActivity : Activity() {
 
     companion object {
         private const val CONNECT_TIMEOUT = 8000
+        private const val MINIMUM_MOVE_INTERVAL = 50L
     }
 }

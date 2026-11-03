@@ -25,6 +25,8 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.ServerSocket
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
 class HostService : Service() {
@@ -38,6 +40,9 @@ class HostService : Service() {
     private var registrationListener: NsdManager.RegistrationListener? = null
     private var pairingCode = ""
     private var lastFrameTime = 0L
+    private var paddedBitmap: Bitmap? = null
+    private val frameExecutor = Executors.newSingleThreadExecutor()
+    private val isSendingFrame = AtomicBoolean(false)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -95,6 +100,7 @@ class HostService : Service() {
         imageReader?.close()
         projection?.stop()
         captureThread?.quitSafely()
+        frameExecutor.shutdownNow()
         super.onDestroy()
     }
 
@@ -216,25 +222,35 @@ class HostService : Service() {
     private fun sendFrame(image: Image) {
         val client = authenticatedClient ?: return
         val now = SystemClock.elapsedRealtime()
-        if (now - lastFrameTime < MINIMUM_FRAME_INTERVAL) {
+        if (now - lastFrameTime < MINIMUM_FRAME_INTERVAL || isSendingFrame.get()) {
             return
         }
         lastFrameTime = now
 
         val plane = image.planes[0]
-        val rowPadding = plane.rowStride - plane.pixelStride * image.width
-        val paddedBitmap = Bitmap.createBitmap(
-            image.width + rowPadding / plane.pixelStride,
-            image.height,
-            Bitmap.Config.ARGB_8888
-        )
-        paddedBitmap.copyPixelsFromBuffer(plane.buffer)
-        val frameBitmap = Bitmap.createBitmap(paddedBitmap, 0, 0, image.width, image.height)
+        val paddedWidth = plane.rowStride / plane.pixelStride
+        val bitmap = paddedBitmap?.takeIf { it.width == paddedWidth && it.height == image.height }
+            ?: Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888).also {
+                paddedBitmap?.recycle()
+                paddedBitmap = it
+            }
+        bitmap.copyPixelsFromBuffer(plane.buffer)
+        val frameBitmap = if (paddedWidth == image.width) {
+            bitmap
+        } else {
+            Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+        }
         val stream = ByteArrayOutputStream()
         frameBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, stream)
-        paddedBitmap.recycle()
-        frameBitmap.recycle()
-        client.send(MessageKind.FRAME, stream.toByteArray())
+        if (frameBitmap !== bitmap) {
+            frameBitmap.recycle()
+        }
+        val frameData = stream.toByteArray()
+        isSendingFrame.set(true)
+        frameExecutor.execute {
+            client.send(MessageKind.FRAME, frameData)
+            isSendingFrame.set(false)
+        }
     }
 
     companion object {

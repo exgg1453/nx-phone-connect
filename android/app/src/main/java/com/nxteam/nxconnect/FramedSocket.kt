@@ -23,6 +23,10 @@ class FramedSocket(private val socket: Socket) {
     private val output = DataOutputStream(socket.getOutputStream().buffered())
     private val writeLock = Any()
 
+    init {
+        socket.tcpNoDelay = true
+    }
+
     fun setReadTimeout(milliseconds: Int) {
         socket.soTimeout = milliseconds
     }

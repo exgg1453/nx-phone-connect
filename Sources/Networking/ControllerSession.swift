@@ -23,6 +23,8 @@ final class ControllerSession: ObservableObject {
 
     private var browser: NWBrowser?
     private var activeConnection: FramedConnection?
+    private var lastMoveDate = Date.distantPast
+    private let minimumMoveInterval: TimeInterval = 0.05
 
     func startBrowsing() {
         guard browser == nil else {
@@ -52,7 +54,7 @@ final class ControllerSession: ObservableObject {
     func connect(to host: DiscoveredHost, pairingCode: String) {
         disconnect()
         state = .connecting
-        let framed = FramedConnection(connection: NWConnection(to: host.endpoint, using: .tcp))
+        let framed = FramedConnection(connection: NWConnection(to: host.endpoint, using: FramedConnection.parameters()))
         framed.onMessage = { [weak self] kind, payload in
             self?.handle(kind: kind, payload: payload)
         }
@@ -84,6 +86,13 @@ final class ControllerSession: ObservableObject {
     }
 
     func sendTouch(phase: TouchPhase, horizontalPosition: Double, verticalPosition: Double) {
+        if phase == .moved {
+            let now = Date()
+            guard now.timeIntervalSince(lastMoveDate) >= minimumMoveInterval else {
+                return
+            }
+            lastMoveDate = now
+        }
         let event = TouchEvent(
             phase: phase,
             normalizedHorizontalPosition: min(max(horizontalPosition, 0), 1),
@@ -109,8 +118,15 @@ final class ControllerSession: ObservableObject {
         case .rejected:
             state = .failed("Wrong pairing code")
         case .frame:
-            if let image = UIImage(data: payload) {
-                currentFrame = image
+            DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+                guard let image = UIImage(data: payload)?.preparingForDisplay() ?? UIImage(data: payload) else {
+                    return
+                }
+                DispatchQueue.main.async {
+                    if self?.state == .connected {
+                        self?.currentFrame = image
+                    }
+                }
             }
         default:
             break

@@ -6,6 +6,14 @@ final class FramedConnection {
     private let queue = DispatchQueue(label: "com.nxteam.nxconnect.connection")
     private let headerLength = 5
     private let maximumPayloadLength = 8_000_000
+    private let busyLock = NSLock()
+    private var isSendingFrame = false
+
+    static func parameters() -> NWParameters {
+        let tcpOptions = NWProtocolTCP.Options()
+        tcpOptions.noDelay = true
+        return NWParameters(tls: nil, tcp: tcpOptions)
+    }
 
     var onMessage: ((MessageKind, Data) -> Void)?
     var onStateChange: ((NWConnection.State) -> Void)?
@@ -37,6 +45,28 @@ final class FramedConnection {
         packet.append(Data(bytes: &length, count: 4))
         packet.append(payload)
         connection.send(content: packet, completion: .contentProcessed { _ in })
+    }
+
+    func sendDroppingIfBusy(_ kind: MessageKind, payload: Data) {
+        busyLock.lock()
+        if isSendingFrame {
+            busyLock.unlock()
+            return
+        }
+        isSendingFrame = true
+        busyLock.unlock()
+        var packet = Data([kind.rawValue])
+        var length = UInt32(payload.count).bigEndian
+        packet.append(Data(bytes: &length, count: 4))
+        packet.append(payload)
+        connection.send(content: packet, completion: .contentProcessed { [weak self] _ in
+            guard let self = self else {
+                return
+            }
+            self.busyLock.lock()
+            self.isSendingFrame = false
+            self.busyLock.unlock()
+        })
     }
 
     private func receiveHeader() {
