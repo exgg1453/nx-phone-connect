@@ -11,7 +11,8 @@ final class SampleHandler: RPBroadcastSampleHandler {
 
     private let frameQueue = DispatchQueue(label: "com.nxteam.nxconnect.frames", qos: .userInteractive)
     private let imageContext = CIContext(options: [.cacheIntermediates: false])
-    private let maximumFrameWidth: CGFloat = 720
+    private let maximumFrameLongSide: CGFloat = 1280
+    private var pendingOrientation: CGImagePropertyOrientation = .up
     private let minimumFrameInterval: TimeInterval = 0.05
     private let acknowledgementTimeout: TimeInterval = 1
     private var frameConnection: FramedConnection?
@@ -50,11 +51,17 @@ final class SampleHandler: RPBroadcastSampleHandler {
         guard sampleBufferType == .video, let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             return
         }
+        var orientation = CGImagePropertyOrientation.up
+        if let value = CMGetAttachment(sampleBuffer, key: RPVideoSampleOrientationKey as CFString, attachmentModeOut: nil) as? NSNumber,
+           let attachedOrientation = CGImagePropertyOrientation(rawValue: value.uint32Value) {
+            orientation = attachedOrientation
+        }
         frameQueue.async { [weak self] in
             guard let self = self, self.frameConnection != nil else {
                 return
             }
             self.pendingPixelBuffer = pixelBuffer
+            self.pendingOrientation = orientation
             self.flushPendingFrame()
         }
     }
@@ -80,7 +87,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
         }
         pendingPixelBuffer = nil
         lastFrameDate = Date()
-        guard let frameData = encode(pixelBuffer) else {
+        guard let frameData = encode(pixelBuffer, orientation: pendingOrientation) else {
             return
         }
         isSendingFrame = true
@@ -93,10 +100,13 @@ final class SampleHandler: RPBroadcastSampleHandler {
         }
     }
 
-    private func encode(_ pixelBuffer: CVPixelBuffer) -> Data? {
-        let image = CIImage(cvPixelBuffer: pixelBuffer)
-        let scale = min(1, maximumFrameWidth / image.extent.width)
-        let scaledImage = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+    private func encode(_ pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation) -> Data? {
+        let image = CIImage(cvPixelBuffer: pixelBuffer).oriented(orientation)
+        let longSide = max(image.extent.width, image.extent.height)
+        let scale = min(1, maximumFrameLongSide / longSide)
+        let scaledImage = image
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            .transformed(by: CGAffineTransform(translationX: -image.extent.origin.x * scale, y: -image.extent.origin.y * scale))
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let options = [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.4]
         return imageContext.jpegRepresentation(of: scaledImage, colorSpace: colorSpace, options: options)

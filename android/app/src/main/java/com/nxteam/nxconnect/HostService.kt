@@ -10,7 +10,6 @@ import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
-import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -21,13 +20,16 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.SystemClock
+import android.util.DisplayMetrics
+import android.view.Display
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.ServerSocket
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.min
+import kotlin.math.max
+import kotlin.math.roundToInt
 
 class HostService : Service() {
     @Volatile
@@ -47,8 +49,9 @@ class HostService : Service() {
     private var captureHandler: Handler? = null
     private var hasPendingFrame = false
     private var isFlushScheduled = false
-    private var frameWidth = 0
-    private var frameHeight = 0
+    private var captureWidth = 0
+    private var captureHeight = 0
+    private var displayListener: DisplayManager.DisplayListener? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -103,6 +106,7 @@ class HostService : Service() {
             serverSocket?.close()
         } catch (exception: IOException) {
         }
+        displayListener?.let { getSystemService(DisplayManager::class.java).unregisterDisplayListener(it) }
         virtualDisplay?.release()
         imageReader?.close()
         projection?.stop()
@@ -202,57 +206,87 @@ class HostService : Service() {
         client.close()
     }
 
-    private fun startCapture(activeProjection: MediaProjection, handler: Handler) {
-        val metrics = resources.displayMetrics
-        val scale = min(1f, MAXIMUM_FRAME_WIDTH / metrics.widthPixels)
-        val width = (metrics.widthPixels * scale).toInt()
-        val height = (metrics.heightPixels * scale).toInt()
+    private fun captureSize(): Triple<Int, Int, Int> {
+        val display = getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
+        val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        display.getRealMetrics(metrics)
+        val longSide = max(metrics.widthPixels, metrics.heightPixels).toFloat()
+        val scale = minOf(1f, MAXIMUM_FRAME_LONG_SIDE / longSide)
+        val width = (metrics.widthPixels * scale).roundToInt() and 1.inv()
+        val height = (metrics.heightPixels * scale).roundToInt() and 1.inv()
+        return Triple(width, height, metrics.densityDpi)
+    }
 
+    private fun createReader(width: Int, height: Int, handler: Handler): ImageReader {
         val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        reader.setOnImageAvailableListener({ source ->
+            if (source !== imageReader) {
+                return@setOnImageAvailableListener
+            }
+            if (authenticatedClient == null) {
+                source.acquireLatestImage()?.close()
+                return@setOnImageAvailableListener
+            }
+            hasPendingFrame = true
+            flushPendingFrame()
+        }, handler)
+        return reader
+    }
+
+    private fun startCapture(activeProjection: MediaProjection, handler: Handler) {
+        val (width, height, density) = captureSize()
+        captureWidth = width
+        captureHeight = height
+        val reader = createReader(width, height, handler)
         imageReader = reader
         virtualDisplay = activeProjection.createVirtualDisplay(
             "NXPhoneConnect",
             width,
             height,
-            metrics.densityDpi,
+            density,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             reader.surface,
             null,
             handler
         )
-        reader.setOnImageAvailableListener({ source ->
-            val image = source.acquireLatestImage()
-            if (image != null) {
-                try {
-                    sendFrame(image)
-                } finally {
-                    image.close()
+
+        val listener = object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) {}
+            override fun onDisplayRemoved(displayId: Int) {}
+            override fun onDisplayChanged(displayId: Int) {
+                if (displayId == Display.DEFAULT_DISPLAY) {
+                    resizeCapture(handler)
                 }
             }
-        }, handler)
+        }
+        displayListener = listener
+        getSystemService(DisplayManager::class.java).registerDisplayListener(listener, handler)
     }
 
-    private fun sendFrame(image: Image) {
-        if (authenticatedClient == null) {
+    private fun resizeCapture(handler: Handler) {
+        val display = virtualDisplay ?: return
+        val (width, height, density) = captureSize()
+        if (width == captureWidth && height == captureHeight) {
             return
         }
-        val plane = image.planes[0]
-        val paddedWidth = plane.rowStride / plane.pixelStride
-        val bitmap = paddedBitmap?.takeIf { it.width == paddedWidth && it.height == image.height }
-            ?: Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888).also {
-                paddedBitmap?.recycle()
-                paddedBitmap = it
-            }
-        bitmap.copyPixelsFromBuffer(plane.buffer)
-        frameWidth = image.width
-        frameHeight = image.height
+        captureWidth = width
+        captureHeight = height
+        val oldReader = imageReader
+        val reader = createReader(width, height, handler)
+        imageReader = reader
+        display.resize(width, height, density)
+        display.surface = reader.surface
+        oldReader?.close()
+        paddedBitmap?.recycle()
+        paddedBitmap = null
         hasPendingFrame = true
         flushPendingFrame()
     }
 
     private fun flushPendingFrame() {
         val client = authenticatedClient ?: return
-        val bitmap = paddedBitmap ?: return
+        val reader = imageReader ?: return
         if (!hasPendingFrame || isSendingFrame.get()) {
             return
         }
@@ -272,10 +306,39 @@ class HostService : Service() {
             }
             return
         }
+
+        val image = try {
+            reader.acquireLatestImage()
+        } catch (exception: IllegalStateException) {
+            null
+        }
+        if (image == null) {
+            if (paddedBitmap == null) {
+                return
+            }
+        }
         hasPendingFrame = false
         lastFrameTime = now
 
-        val frameBitmap = if (bitmap.width == frameWidth) {
+        if (image != null) {
+            try {
+                val plane = image.planes[0]
+                val paddedWidth = plane.rowStride / plane.pixelStride
+                val bitmap = paddedBitmap?.takeIf { it.width == paddedWidth && it.height == image.height }
+                    ?: Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888).also {
+                        paddedBitmap?.recycle()
+                        paddedBitmap = it
+                    }
+                bitmap.copyPixelsFromBuffer(plane.buffer)
+            } finally {
+                image.close()
+            }
+        }
+
+        val bitmap = paddedBitmap ?: return
+        val frameWidth = minOf(captureWidth, bitmap.width)
+        val frameHeight = minOf(captureHeight, bitmap.height)
+        val frameBitmap = if (bitmap.width == frameWidth && bitmap.height == frameHeight) {
             bitmap
         } else {
             Bitmap.createBitmap(bitmap, 0, 0, frameWidth, frameHeight)
@@ -306,7 +369,7 @@ class HostService : Service() {
 
         private const val CHANNEL_IDENTIFIER = "screen_sharing"
         private const val NOTIFICATION_IDENTIFIER = 1
-        private const val MAXIMUM_FRAME_WIDTH = 720f
+        private const val MAXIMUM_FRAME_LONG_SIDE = 1280f
         private const val MINIMUM_FRAME_INTERVAL = 50L
         private const val ACKNOWLEDGEMENT_TIMEOUT = 1000L
         private const val JPEG_QUALITY = 40
